@@ -3,17 +3,24 @@
 #include <aclapi.h>
 #include <locale.h>
 #include <string.h>
+#include <lmcons.h>
 
 #define FILENAME "test.txt"
 
 void printError(const char* msg) {
-    printf("%s (код ошибки: %lu)\n", msg, GetLastError());
+    printf("%s (error code: %lu)\n", msg, GetLastError());
 }
 
 //очистка буфера
 void clearInputBuffer() {
     int c;
     while ((c = getchar()) != '\n' && c != EOF);
+}
+
+//получение текущего пользователя
+void getCurrentUser(char* username) {
+    DWORD size = UNLEN + 1;
+    GetUserName(username, &size);
 }
 
 //1.создание файла
@@ -29,11 +36,11 @@ void createFile() {
     );
 
     if (hFile == INVALID_HANDLE_VALUE) {
-        printError("Ошибка создания файла");
+        printError("Create file failed");
         return;
     }
 
-    printf("Файл успешно создан\n");
+    printf("File created successfully\n");
     CloseHandle(hFile);
 }
 
@@ -50,26 +57,26 @@ void writeFileData() {
     );
 
     if (hFile == INVALID_HANDLE_VALUE) {
-        printError("Ошибка открытия файла");
+        printError("Open file failed");
         return;
     }
 
     char data[256];
 
-    printf("Введите текст: ");
+    printf("Enter text: ");
     clearInputBuffer();
 
     if (fgets(data, sizeof(data), stdin) == NULL) {
-        printf("Ошибка ввода\n");
+        printf("Input failed\n");
         CloseHandle(hFile);
         return;
     }
 
     DWORD written;
     if (!WriteFile(hFile, data, (DWORD)strlen(data), &written, NULL)) {
-        printError("Ошибка записи");
+        printError("Write failed");
     } else {
-        printf("Записано байт: %lu\n", written);
+        printf("Written bytes: %lu\n", written);
     }
 
     CloseHandle(hFile);
@@ -88,14 +95,14 @@ void readFileData() {
     );
 
     if (hFile == INVALID_HANDLE_VALUE) {
-        printError("Ошибка открытия файла");
+        printError("Open file failed");
         return;
     }
 
     char buffer[256];
     DWORD bytesRead;
 
-    printf("Содержимое файла:\n");
+    printf("File content:\n");
 
     while (ReadFile(hFile, buffer, sizeof(buffer) - 1, &bytesRead, NULL) && bytesRead > 0) {
         buffer[bytesRead] = '\0';
@@ -111,16 +118,16 @@ void setReadOnlyAttribute() {
     DWORD attrs = GetFileAttributes(FILENAME);
 
     if (attrs == INVALID_FILE_ATTRIBUTES) {
-        printError("Ошибка получения атрибутов");
+        printError("Get attributes failed");
         return;
     }
 
     attrs |= FILE_ATTRIBUTE_READONLY;
 
     if (!SetFileAttributes(FILENAME, attrs))
-        printError("Ошибка установки атрибута");
+        printError("Set attribute failed");
     else
-        printf("Атрибут 'только чтение' установлен\n");
+        printf("Read-only attribute applied\n");
 }
 
 //5.снять атрибут
@@ -128,62 +135,40 @@ void removeReadOnlyAttribute() {
     DWORD attrs = GetFileAttributes(FILENAME);
 
     if (attrs == INVALID_FILE_ATTRIBUTES) {
-        printError("Ошибка получения атрибутов");
+        printError("Get attributes failed");
         return;
     }
 
     attrs &= ~FILE_ATTRIBUTE_READONLY;
 
     if (!SetFileAttributes(FILENAME, attrs))
-        printError("Ошибка снятия атрибута");
+        printError("Remove attribute failed");
     else
-        printf("Атрибут 'только чтение' снят\n");
+        printf("Read-only attribute removed\n");
 }
 
-//6.ACL только чтение с наследованием
+//6.ACL только чтение 
 void setReadOnlyACL() {
-    EXPLICIT_ACCESS ea[2];
-    PACL oldDACL = NULL, newDACL = NULL;
-    PSECURITY_DESCRIPTOR sd = NULL;
+    char username[UNLEN + 1];
+    getCurrentUser(username);
+
+    EXPLICIT_ACCESS ea;
+    PACL newDACL = NULL;
 
     ZeroMemory(&ea, sizeof(ea));
 
-    //получаем старый ACL
-    DWORD res = GetNamedSecurityInfo(
-        FILENAME,
-        SE_FILE_OBJECT,
-        DACL_SECURITY_INFORMATION,
-        NULL,
-        NULL,
-        &oldDACL,
-        NULL,
-        &sd
-    );
+    ea.grfAccessPermissions = GENERIC_READ;
+    ea.grfAccessMode = SET_ACCESS;
+    ea.grfInheritance = NO_INHERITANCE;
+
+    ea.Trustee.TrusteeForm = TRUSTEE_IS_NAME;
+    ea.Trustee.TrusteeType = TRUSTEE_IS_USER;
+    ea.Trustee.ptstrName = username;
+
+    DWORD res = SetEntriesInAcl(1, &ea, NULL, &newDACL);
 
     if (res != ERROR_SUCCESS) {
-        printf("Ошибка получения текущего ACL: %lu\n", res);
-        return;
-    }
-
-    //запрет записи
-    ea[0].grfAccessPermissions = GENERIC_WRITE;
-    ea[0].grfAccessMode = DENY_ACCESS;
-    ea[0].grfInheritance = SUB_CONTAINERS_AND_OBJECTS_INHERIT;
-    ea[0].Trustee.TrusteeForm = TRUSTEE_IS_NAME;
-    ea[0].Trustee.ptstrName = "Everyone";
-
-    //разрешение чтения
-    ea[1].grfAccessPermissions = GENERIC_READ;
-    ea[1].grfAccessMode = GRANT_ACCESS;
-    ea[1].grfInheritance = SUB_CONTAINERS_AND_OBJECTS_INHERIT;
-    ea[1].Trustee.TrusteeForm = TRUSTEE_IS_NAME;
-    ea[1].Trustee.ptstrName = "Everyone";
-
-    res = SetEntriesInAcl(2, ea, oldDACL, &newDACL);
-
-    if (res != ERROR_SUCCESS) {
-        printf("Ошибка создания ACL: %lu\n", res);
-        if (sd) LocalFree(sd);
+        printf("ACL creation failed: %lu\n", res);
         return;
     }
 
@@ -198,49 +183,35 @@ void setReadOnlyACL() {
     );
 
     if (res == ERROR_SUCCESS)
-        printf("ACL: установлен режим 'только чтение'\n");
+        printf("Read-only ACL applied for user: %s\n", username);
     else
-        printf("Ошибка установки ACL: %lu\n", res);
+        printf("ACL set failed: %lu\n", res);
 
-    if (sd) LocalFree(sd);
     if (newDACL) LocalFree(newDACL);
 }
 
 //7.полный доступ с сохранением
 void setFullAccessACL() {
+    char username[UNLEN + 1];
+    getCurrentUser(username);
+
     EXPLICIT_ACCESS ea;
-    PACL oldDACL = NULL, newDACL = NULL;
-    PSECURITY_DESCRIPTOR sd = NULL;
+    PACL newDACL = NULL;
 
     ZeroMemory(&ea, sizeof(ea));
 
-    DWORD res = GetNamedSecurityInfo(
-        FILENAME,
-        SE_FILE_OBJECT,
-        DACL_SECURITY_INFORMATION,
-        NULL,
-        NULL,
-        &oldDACL,
-        NULL,
-        &sd
-    );
-
-    if (res != ERROR_SUCCESS) {
-        printf("Ошибка получения текущего ACL: %lu\n", res);
-        return;
-    }
-
     ea.grfAccessPermissions = GENERIC_ALL;
     ea.grfAccessMode = SET_ACCESS;
-    ea.grfInheritance = SUB_CONTAINERS_AND_OBJECTS_INHERIT;
-    ea.Trustee.TrusteeForm = TRUSTEE_IS_NAME;
-    ea.Trustee.ptstrName = "Everyone";
+    ea.grfInheritance = NO_INHERITANCE;
 
-    res = SetEntriesInAcl(1, &ea, oldDACL, &newDACL);
+    ea.Trustee.TrusteeForm = TRUSTEE_IS_NAME;
+    ea.Trustee.TrusteeType = TRUSTEE_IS_USER;
+    ea.Trustee.ptstrName = username;
+
+    DWORD res = SetEntriesInAcl(1, &ea, NULL, &newDACL);
 
     if (res != ERROR_SUCCESS) {
-        printf("Ошибка создания ACL: %lu\n", res);
-        if (sd) LocalFree(sd);
+        printf("ACL creation failed: %lu\n", res);
         return;
     }
 
@@ -255,32 +226,31 @@ void setFullAccessACL() {
     );
 
     if (res == ERROR_SUCCESS)
-        printf("Полный доступ восстановлен\n");
+        printf("Full access restored for user: %s\n", username);
     else
-        printf("Ошибка установки ACL: %lu\n", res);
+        printf("ACL set failed: %lu\n", res);
 
-    if (sd) LocalFree(sd);
     if (newDACL) LocalFree(newDACL);
 }
 
 //меню
 int main() {
-    setlocale(LC_ALL, "");
+    setlocale(LC_ALL, ".UTF-8");
     int choice;
 
     do {
-        printf("\n1 - Создать файл\n");
-        printf("2 - Записать\n");
-        printf("3 - Прочитать\n");
-        printf("4 - Атрибут: только чтение\n");
-        printf("5 - Убрать атрибут\n");
-        printf("6 - ACL: только чтение\n");
-        printf("7 - ACL: полный доступ\n");
-        printf("0 - Выход\n");
+        printf("\n1 - Create file\n");
+        printf("2 - Write\n");
+        printf("3 - Read\n");
+        printf("4 - Attribute: read only\n");
+        printf("5 - Remove attribute\n");
+        printf("6 - ACL: read only\n");
+        printf("7 - ACL: full access\n");
+        printf("0 - Exit\n");
         printf(">> ");
 
         if (scanf("%d", &choice) != 1) {
-            printf("Ошибка ввода\n");
+            printf("Input error\n");
             break;
         }
 
